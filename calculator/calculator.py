@@ -5,6 +5,8 @@ from retrying import retry
 import sys
 import datetime
 import requests
+from botocore.exceptions import ClientError
+import time
 
 
 def validate_date(date_text):
@@ -193,61 +195,85 @@ class EmrCostCalculator:
         :return: A dictionary with the total cost of the cluster and the
                 individual cost of each instance group (Master, Core, Task)
         """
-        cost_dict = {}
+        
         availability_zone = self._get_availability_zone(cluster_id)
-
+        print("ClusterID", cluster_id)
         try:
-            instance_groups = self._get_instance_groups(cluster_id)
+            print("Trying Instance groups")
+            tries = 0
+            while tries < 5:
+                try:
+                    cost_dict = {}
+                    instance_groups = self._get_instance_groups(cluster_id)
 
-            for instance_group in instance_groups:
-                for instance in self._get_instances(instance_group,
-                                                    cluster_id):
-                    cost = self._get_instance_cost(instance, availability_zone)
-                    group_type = instance_group.group_type
-                    cost_dict.setdefault(group_type + ".EC2", 0)
-                    cost_dict[group_type + ".EC2"] += cost
-                    cost_dict.setdefault(group_type + ".EMR", 0)
-                    hours_run = ((instance.termination_ts -
-                                  instance.creation_ts)
-                                 .total_seconds() / 3600)
-                    emr_cost = self.ec2_emr_pricing.get_emr_price(
-                        instance.instance_type) * hours_run
-                    cost_dict[group_type + ".EMR"] += emr_cost
-                    # ebs
-                    ebs_cost = 0
-                    cost_dict.setdefault(group_type + ".EBS", 0)
-                    for ebs in instance_group.disk_size:
-                        ebs_cost = ebs_cost + ebs['VolumeSpecification']['SizeInGB'] * 0.1 * hours_run / (24 * 30)
-                    cost_dict[group_type + ".EBS"] += ebs_cost
-                    cost_dict.setdefault('TOTAL', 0)
-                    cost_dict['TOTAL'] += cost + emr_cost + ebs_cost
-        except Exception:
-            instance_fleets = self._get_instance_fleets(cluster_id)
-            for instance_fleet in instance_fleets:
-                for instance in self._get_instances(instance_fleet,
-                                                    cluster_id, True):
-                    print(instance)
-                    cost = self._get_instance_cost(instance, availability_zone)
-                    if(cost is None):
-                        cost = 0
-                    group_type = instance_fleet.group_type
-                    cost_dict.setdefault(group_type + ".EC2", 0)
-                    cost_dict[group_type + ".EC2"] += cost
-                    cost_dict.setdefault(group_type + ".EMR", 0)
-                    hours_run = ((instance.termination_ts -
-                                  instance.creation_ts)
-                                 .total_seconds() / 3600)
-                    emr_cost = self.ec2_emr_pricing.get_emr_price(
-                        instance.instance_type) * hours_run
-                    cost_dict[group_type + ".EMR"] += emr_cost
-                    # ebs
-                    ebs_cost = 0
-                    cost_dict.setdefault(group_type + ".EBS", 0)
-                    for ebs in instance_fleet.disk_size:
-                        ebs_cost = ebs_cost + ebs['VolumeSpecification']['SizeInGB'] * 0.1 * hours_run / (24 * 30)
-                    cost_dict[group_type + ".EBS"] += ebs_cost
-                    cost_dict.setdefault('TOTAL', 0)
-                    cost_dict['TOTAL'] += cost + emr_cost + ebs_cost
+                    for instance_group in instance_groups:
+
+                        for instance in self._get_instances(instance_group,
+                                                            cluster_id):
+                            
+                            cost = self._get_instance_cost(instance, availability_zone)
+                            print("Checking instance", instance.instance_type, cost)
+                            group_type = instance_group.group_type
+                            cost_dict.setdefault(group_type + ".EC2", 0)
+                            cost_dict[group_type + ".EC2"] += cost
+                            cost_dict.setdefault(group_type + ".EMR", 0)
+                            hours_run = ((instance.termination_ts -
+                                        instance.creation_ts)
+                                        .total_seconds() / 3600)
+                            emr_cost = self.ec2_emr_pricing.get_emr_price(
+                                instance.instance_type) * hours_run
+                            cost_dict[group_type + ".EMR"] += emr_cost
+                            
+                            # ebs
+                            ebs_cost = 0
+                            cost_dict.setdefault(group_type + ".EBS", 0)
+                            for ebs in instance_group.disk_size:
+                                ebs_cost = ebs_cost + ebs['VolumeSpecification']['SizeInGB'] * 0.1 * hours_run / (24 * 30)
+                            cost_dict[group_type + ".EBS"] += ebs_cost
+                            cost_dict.setdefault('TOTAL', 0)
+                            cost_dict['TOTAL'] += cost + emr_cost + ebs_cost
+                            time.sleep(5)
+                    break
+                except ClientError as ex:
+                    if ex.response['Error']['Code'] == 'ThrottlingException':
+                        print('ThrottlingException sleeping...')
+                        time.sleep(30)
+                        tries += 1
+                    else:
+                        raise ex
+        except ClientError as ex:
+            print("Trying Instance fleets")
+            if ex.response['Error']['Code'] == 'InvalidRequestException':
+                cost_dict = {}
+                instance_fleets = self._get_instance_fleets(cluster_id)
+                for instance_fleet in instance_fleets:
+                    for instance in self._get_instances(instance_fleet,
+                                                        cluster_id, True):
+                        print(instance)
+                        cost = self._get_instance_cost(instance, availability_zone)
+                        if(cost is None):
+                            cost = 0
+                        group_type = instance_fleet.group_type
+                        cost_dict.setdefault(group_type + ".EC2", 0)
+                        cost_dict[group_type + ".EC2"] += cost
+                        cost_dict.setdefault(group_type + ".EMR", 0)
+                        hours_run = ((instance.termination_ts -
+                                    instance.creation_ts)
+                                    .total_seconds() / 3600)
+                        emr_cost = self.ec2_emr_pricing.get_emr_price(
+                            instance.instance_type) * hours_run
+                        cost_dict[group_type + ".EMR"] += emr_cost
+                        # ebs
+                        ebs_cost = 0
+                        cost_dict.setdefault(group_type + ".EBS", 0)
+                        for ebs in instance_fleet.disk_size:
+                            ebs_cost = ebs_cost + ebs['VolumeSpecification']['SizeInGB'] * 0.1 * hours_run / (24 * 30)
+                        cost_dict[group_type + ".EBS"] += ebs_cost
+                        cost_dict.setdefault('TOTAL', 0)
+                        cost_dict['TOTAL'] += cost + emr_cost + ebs_cost
+                        time.sleep(5)
+            else:
+                raise ex
 
         return cost_dict
 
@@ -285,9 +311,9 @@ class EmrCostCalculator:
         Invokes the EMR api and gets a list of the cluster's instance groups.
         :return: List of our custom InstanceGroup objects
         """
-        groups = self.conn.list_instance_groups(ClusterId=cluster_id)[
-            'InstanceGroups']
+        groups = self.conn.list_instance_groups(ClusterId=cluster_id)['InstanceGroups']
         instance_groups = []
+        print(cluster_id,)
         for group in groups:
             inst_group = InstanceGroup(
                 group['Id'],
@@ -297,6 +323,11 @@ class EmrCostCalculator:
             )
 
             instance_groups.append(inst_group)
+            print('\t',  group['Id'])
+            print('\t',  group['InstanceType'])
+            print('\t',  group['InstanceGroupType'])
+            print('\t',  group['EbsBlockDevices'])
+
         return instance_groups
 
     def _get_instance_fleets(self, cluster_id):
@@ -304,15 +335,15 @@ class EmrCostCalculator:
         Invokes the EMR api and gets a list of the cluster's instance fleets.
         :return: List of our custom InstanceFleet objects
         """
-        fleets = self.conn.list_instance_fleets(ClusterId=cluster_id)[
-            'InstanceFleets']
+        print(cluster_id)
+        fleets = self.conn.list_instance_fleets(ClusterId=cluster_id)['InstanceFleets']
         instance_fleets = []
         for fleet in fleets:
             inst_fleet = InstanceGroup(
                 fleet['Id'],
                 fleet['InstanceTypeSpecifications'][0]['InstanceType'],
                 fleet['InstanceFleetType'],
-                fleet['InstanceTypeSpecifications'][0]['EbsBlockDevices']
+                fleet['InstanceTypeSpecifications'][0].get('EbsBlockDevices', [])
             )
 
             instance_fleets.append(inst_fleet)
@@ -367,8 +398,7 @@ class EmrCostCalculator:
 
     def _get_availability_zone(self, cluster_id):
         cluster_description = self.conn.describe_cluster(ClusterId=cluster_id)
-        return cluster_description['Cluster']['Ec2InstanceAttributes'][
-            'Ec2AvailabilityZone']
+        return cluster_description['Cluster']['Ec2InstanceAttributes'].get('Ec2AvailabilityZone','us-east-1d')
 
 
 class SpotPricing:
