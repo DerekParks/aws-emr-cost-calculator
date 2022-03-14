@@ -16,6 +16,7 @@ def validate_date(date_text):
         raise ValueError('Incorrect data format, should be YYYY-MM-DD')
 
 
+
 def is_error_retriable(exception):
     """
     Use this function in order to back off only
