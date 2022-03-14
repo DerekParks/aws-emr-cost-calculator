@@ -319,7 +319,7 @@ class EmrCostCalculator:
                 group['Id'],
                 group['InstanceType'],
                 group['InstanceGroupType'],
-                group['EbsBlockDevices']
+                self._get_ebs_block_devices(group)
             )
 
             instance_groups.append(inst_group)
@@ -343,7 +343,7 @@ class EmrCostCalculator:
                 fleet['Id'],
                 fleet['InstanceTypeSpecifications'][0]['InstanceType'],
                 fleet['InstanceFleetType'],
-                fleet['InstanceTypeSpecifications'][0].get('EbsBlockDevices', [])
+                self._get_ebs_block_devices(fleet['InstanceTypeSpecifications'][0])
             )
 
             instance_fleets.append(inst_fleet)
@@ -396,6 +396,12 @@ class EmrCostCalculator:
                       'Cluster: {}\n'
                       '{}'.format(cluster_id, e), file=sys.stderr)
 
+    def _get_ebs_block_devices(self, spec_map):
+        ebsBlockDevices = []
+        if 'EbsBlockDevices' in spec_map:
+            ebsBlockDevices = spec_map['EbsBlockDevices']
+        return ebsBlockDevices
+    
     def _get_availability_zone(self, cluster_id):
         cluster_description = self.conn.describe_cluster(ClusterId=cluster_id)
         return cluster_description['Cluster']['Ec2InstanceAttributes'].get('Ec2AvailabilityZone','us-east-1d')
